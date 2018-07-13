@@ -36,7 +36,7 @@ artifacts:
     - texttoaudio/audio.mp3
     # - location
   discard-paths: yes
-  #base-directory: location
+  base-directory: ${CODEBUILD_SRC_DIR}
 #cache:
   #paths:
     # - paths
