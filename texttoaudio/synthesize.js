@@ -1,7 +1,7 @@
 var AWS = require('aws-sdk');
 var fs = require('fs');
 
-AWS.config.update({ region: 'us-east-1' });
+AWS.config.update({ region: 'us-west-2' });
 
 /* Synthesizes plain text or SSML into a file of human-like speech. */
 var polly = new AWS.Polly({ apiVersion: "2016-06-10" });
