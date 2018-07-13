@@ -1,0 +1,42 @@
+version: 0.2
+
+#env:
+  #variables:
+     # key: "value"
+     # key: "value"
+  #parameter-store:
+     # key: "value"
+     # key: "value"
+
+phases:
+  #install:
+    #commands:
+      # - command
+      # - command
+  #pre_build:
+    #commands:
+      # - command
+      # - command
+  build:
+    commands:
+      - pwd
+      - echo 'hello Adrian'
+      - ls -al
+      - cd texttoaudio
+      - npm install
+      - node synthesize.js
+      # - aws s3 cp 
+      # - command
+  #post_build:
+    #commands:
+      # - command
+      # - command
+artifacts:
+  files:
+    - texttoaudio/audio.mp3
+    # - location
+  discard-paths: yes
+  #base-directory: location
+#cache:
+  #paths:
+    # - paths
