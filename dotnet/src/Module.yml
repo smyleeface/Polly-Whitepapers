@@ -1,0 +1,328 @@
+Module: PollyWhitepapers.AwsStudyGurus  # Better naming when using Module.Owner
+Version: 1.0-DEV
+Description: Module description
+
+Items:
+
+############################################ S3 Bucket
+
+  - Resource: FileBucket
+    Type: AWS::S3::Bucket
+    Scope: all
+    Allow: ReadWrite
+    ## comment out below on first deploy - then uncomment and re-deploy
+    Properties:
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Queue: !GetAtt StartTextractAnalysisQueue.Arn
+            Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: Suffix
+                    Value: .pdf
+                  - Name: Prefix
+                    Value: raw/
+          - Queue: !GetAtt ProcessTextractResultsQueue.Arn
+            Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: Suffix
+                    Value: manifest
+                  - Name: Prefix
+                    Value: results/
+          - Queue: !GetAtt StartPollyConversionQueue.Arn
+            Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: Suffix
+                    Value: plaintext.txt
+                  - Name: Prefix
+                    Value: processed/
+    ## comment out above on first deploy - then uncomment and re-deploy
+
+  # dead letter queue
+  - Resource: PollyWhitepaperDLQ
+    Type: AWS::SQS::Queue
+
+############################################ Start Textract Process
+
+  # the sqs queue that will contain messages of s3 events
+  - Resource: StartTextractAnalysisQueue
+    Allow: Receive
+    Scope: StartTextractAnalysis
+    Type: AWS::SQS::Queue
+    Properties:
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PollyWhitepaperDLQ.Arn
+        maxReceiveCount: 2
+      MessageRetentionPeriod: 300
+      VisibilityTimeout: 40
+    
+  # permission to interact with the sqs queue which contain messages of s3 events  
+  - Resource: StartTextractAnalysisQueuePolicy
+    Type: AWS::SQS::QueuePolicy
+    DependsOn:
+      - StartTextractAnalysisQueue
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: '*'
+            Action:
+              - sqs:GetQueueUrl
+              - sqs:SendMessage
+            Resource: !GetAtt StartTextractAnalysisQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !GetAtt FileBucket.Arn
+      Queues:
+        - !Ref StartTextractAnalysisQueue
+
+  # sns topic for textract completion
+  - Resource: StartTextractAnalysisCompleteSns
+    Type: AWS::SNS::Topic
+    Scope: StartTextractAnalysis
+
+  # role for publishing to sns completion topic from textract
+  - Resource: StartTextractAnalysisCompleteSnsRole
+    Scope: StartTextractAnalysis
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: StartTextractAnalysisCompleteSns
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "textract.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+  # policy to allow textract to publish to sns completion topic
+  - Resource: StartTextractAnalysisCompleteSnsPolicy
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Action:
+              - sns:Publish
+            Resource: !Ref StartTextractAnalysisCompleteSns
+      PolicyName: StartTextractAnalysisSnsPolicy
+      Roles:
+        - !Ref StartTextractAnalysisCompleteSnsRole
+
+  # permission for lambda to make requests to textract 
+  - Resource: StartTextractAnalysisLambdaPermission
+    Value: "*"
+    Scope: StartTextractAnalysis
+    Allow:
+      - textract:StartDocumentAnalysis
+
+  - Function: StartTextractAnalysis
+    Description: Sends file uploaded to S3 to the Textract service
+    Memory: 256
+    Timeout: 30
+    Sources:
+      - Sqs: !GetAtt StartTextractAnalysisQueue.Arn
+
+
+############################################ Get Results of Textract
+
+  # the sqs queue that will contain messages of completed analysis
+  - Resource: GetTextractResultsQueue
+    Allow: Receive
+    Scope: GetTextractResults
+    Type: AWS::SQS::Queue
+    Properties:
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PollyWhitepaperDLQ.Arn
+        maxReceiveCount: 2
+      MessageRetentionPeriod: 300
+      VisibilityTimeout: 40
+      
+  # permission for sns to interact with the sqs queue which contain messages of analysis event  
+  - Resource: GetTextractResultsQueuePolicy
+    Type: AWS::SQS::QueuePolicy
+    DependsOn:
+      - GetTextractResultsQueue
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: '*'
+            Action:
+              - sqs:GetQueueUrl
+              - sqs:SendMessage
+            Resource: !GetAtt GetTextractResultsQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Ref StartTextractAnalysisCompleteSns
+      Queues:
+        - !Ref GetTextractResultsQueue
+
+  # sns subscription
+  - Resource: GetTextractResultsQueueSnsSubscription
+    Type: AWS::SNS::Subscription
+    DependsOn: GetTextractResultsQueue
+    Properties:
+      TopicArn: !Ref StartTextractAnalysisCompleteSns
+      Protocol: sqs
+      Endpoint: !GetAtt GetTextractResultsQueue.Arn
+      RawMessageDelivery: true
+          
+  # permission for lambda to make get requests to textract 
+  - Resource: GetTextractResultsLambdaPermission
+    Value: "*"
+    Scope: GetTextractResults
+    Allow:
+      - textract:GetDocumentAnalysis
+      
+  # get textract function
+  - Function: GetTextractResults
+    Description: Gets and saves to S3 the results of a Textract job
+    Memory: 256
+    Timeout: 30
+    Sources:
+      - Sqs: !GetAtt GetTextractResultsQueue.Arn
+        
+############################################ Process Results of Textract
+
+  # the sqs queue that will contain messages of S3 gettextract manifest request
+  - Resource: ProcessTextractResultsQueue
+    Allow: Receive
+    Type: AWS::SQS::Queue
+    Properties:
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PollyWhitepaperDLQ.Arn
+        maxReceiveCount: 2
+      MessageRetentionPeriod: 300
+      VisibilityTimeout: 40
+
+  # permission to interact with the sqs queue which contain messages of s3 events  
+  - Resource: ProcessTextractResultsQueuePolicy
+    Type: AWS::SQS::QueuePolicy
+    DependsOn:
+      - ProcessTextractResultsQueue
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: '*'
+            Action:
+              - sqs:GetQueueUrl
+              - sqs:SendMessage
+            Resource: !GetAtt ProcessTextractResultsQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !GetAtt FileBucket.Arn
+      Queues:
+        - !Ref ProcessTextractResultsQueue
+
+  # process saved textract results
+  - Function: ProcessTextractResults
+    Description: Compiles the saved Textract results to a single file
+    Memory: 256
+    Timeout: 30
+    Sources:
+      - Sqs: !GetAtt ProcessTextractResultsQueue.Arn
+
+############################################ Start Polly Conversion
+
+  # the sqs queue that will contain messages of S3 gettextract manifest request
+  - Resource: StartPollyConversionQueue
+    Allow: Receive
+    Type: AWS::SQS::Queue
+    Properties:
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PollyWhitepaperDLQ.Arn
+        maxReceiveCount: 2
+      MessageRetentionPeriod: 300
+      VisibilityTimeout: 40
+
+  # permission to interact with the sqs queue which contain messages of s3 events  
+  - Resource: StartPollyConversionQueuePolicy
+    Type: AWS::SQS::QueuePolicy
+    DependsOn:
+      - StartPollyConversionQueue
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: '*'
+            Action:
+              - sqs:GetQueueUrl
+              - sqs:SendMessage
+            Resource: !GetAtt StartPollyConversionQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !GetAtt FileBucket.Arn
+      Queues:
+        - !Ref StartPollyConversionQueue
+
+  # sns topic for polly completion
+  - Resource: StartPollyConversionCompleteSns
+    Type: AWS::SNS::Topic
+    Scope: StartPollyConversion
+
+  # email to send the completion notification
+  - Parameter: PollyConversionCompleteSnsEmail
+    Description: Email address to send the completion message
+    
+  # sns email subscription
+  - Resource: PollyConversionCompleteSnsEmailSubscription
+    Type: AWS::SNS::Subscription
+    DependsOn: GetTextractResultsQueue
+    Properties:
+      TopicArn: !Ref StartPollyConversionCompleteSns
+      Protocol: email-json
+      Endpoint: !Ref PollyConversionCompleteSnsEmail
+
+  # policy to allow polly to publish to sns completion topic
+  ## comment out below on first deploy - then uncomment and re-deploy
+  - Resource: StartPollyConversionCompleteSnsPolicy
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Id: PollyTopicPolicy1234
+        Version: 2012-10-17
+        Statement:
+          - Sid: SnsPublish1234
+            Effect: Allow
+            Action:
+              - sns:Publish
+            Resource: !Ref StartPollyConversionCompleteSns
+            Principal:
+              AWS: "*"
+      Topics:
+        - !Ref StartPollyConversionCompleteSns
+  ## comment out above on first deploy - then uncomment and re-deploy
+  
+  # permission for lambda to make requests to textract 
+  - Resource: StartPollyConversionLambdaPermission
+    Value: "*"
+    Scope: StartPollyConversion
+    Allow:
+      - polly:StartSpeechSynthesisTask
+
+  # process saved textract results
+  - Function: StartPollyConversion
+    Description: Sends the processed textract text to the Polly service
+    Memory: 256
+    Timeout: 30
+    Sources:
+      - Sqs: !GetAtt StartPollyConversionQueue.Arn
