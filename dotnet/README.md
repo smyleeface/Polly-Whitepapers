@@ -1,5 +1,7 @@
 # Polly Whitepapers (.Net Core)
 
+![](pollywhitepapers.png)
+
 - Install .Net Core 2.2.300
 - `dotnet tool install -g LambdaSharp.Tool --version 0.6.0.3`
 - `lash config --cli-profile Default`
